@@ -1,0 +1,415 @@
+openapi: 3.0.3
+info:
+  title: Mini Event Management System API
+  description: |
+    A RESTful API for browsing events, booking tickets, and recording attendance.
+    Tickets are reserved using database-level transactions with `SELECT ... FOR UPDATE`
+    to prevent race conditions under concurrent load.
+  version: 1.0.0
+  contact:
+    name: API Support
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Events
+    description: Manage and browse events
+  - name: Bookings
+    description: Book tickets for events
+  - name: Users
+    description: User-specific operations
+
+paths:
+  /events:
+    get:
+      tags: [Events]
+      summary: List all upcoming events
+      description: Returns all events scheduled in the future, ordered by date ascending.
+      responses:
+        '200':
+          description: List of upcoming events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [Events]
+      summary: Create a new event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+            example:
+              title: "Node.js Workshop"
+              description: "Hands-on workshop for backend developers."
+              date: "2025-08-20T10:00:00.000Z"
+              total_capacity: 50
+      responses:
+        '201':
+          description: Event created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /events/{id}/attendance:
+    post:
+      tags: [Events]
+      summary: Record attendance using a booking code
+      description: |
+        Takes a unique booking code, verifies it belongs to the given event,
+        and records the attendee's entry time. Returns how many tickets were booked.
+      parameters:
+        - $ref: '#/components/parameters/EventId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttendanceRequest'
+      responses:
+        '200':
+          description: Attendance recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Attendance already recorded for this booking
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: "Attendance already recorded for this booking"
+                data:
+                  tickets_booked: 2
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: Book tickets for an event
+      description: |
+        Creates a booking for a user. Uses a MySQL transaction with row-level locking
+        (`SELECT ... FOR UPDATE`) to prevent overselling when multiple users book simultaneously.
+        Returns a unique booking code on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+            example:
+              user_id: 1
+              event_id: 2
+              tickets_count: 2
+      responses:
+        '201':
+          description: Booking confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Not enough tickets available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                message: "Not enough tickets available. Only 1 ticket(s) left."
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{id}/bookings:
+    get:
+      tags: [Users]
+      summary: Get all bookings for a user
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: User bookings retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserBookingsResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    EventId:
+      name: id
+      in: path
+      required: true
+      description: Event ID
+      schema:
+        type: integer
+        minimum: 1
+    UserId:
+      name: id
+      in: path
+      required: true
+      description: User ID
+      schema:
+        type: integer
+        minimum: 1
+
+  schemas:
+    # ── Requests ──────────────────────────────────────────────
+    CreateEventRequest:
+      type: object
+      required: [title, date, total_capacity]
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          example: "Tech Conference 2025"
+        description:
+          type: string
+          nullable: true
+          example: "Annual technology conference."
+        date:
+          type: string
+          format: date-time
+          example: "2025-09-15T09:00:00.000Z"
+        total_capacity:
+          type: integer
+          minimum: 1
+          example: 500
+
+    CreateBookingRequest:
+      type: object
+      required: [user_id, event_id]
+      properties:
+        user_id:
+          type: integer
+          minimum: 1
+          example: 1
+        event_id:
+          type: integer
+          minimum: 1
+          example: 2
+        tickets_count:
+          type: integer
+          minimum: 1
+          default: 1
+          example: 2
+
+    AttendanceRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          format: uuid
+          example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+
+    # ── Models ────────────────────────────────────────────────
+    Event:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        date:
+          type: string
+          format: date-time
+        total_capacity:
+          type: integer
+        remaining_tickets:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        event_id:
+          type: integer
+        unique_code:
+          type: string
+          format: uuid
+        tickets_count:
+          type: integer
+        booking_date:
+          type: string
+          format: date-time
+        event_title:
+          type: string
+        event_date:
+          type: string
+          format: date-time
+
+    # ── Responses ─────────────────────────────────────────────
+    EventListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+
+    EventResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/Event'
+
+    BookingResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Booking confirmed"
+        data:
+          $ref: '#/components/schemas/Booking'
+
+    UserBookingsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            user:
+              type: object
+              properties:
+                id:
+                  type: integer
+                name:
+                  type: string
+                email:
+                  type: string
+            bookings:
+              type: array
+              items:
+                $ref: '#/components/schemas/Booking'
+
+    AttendanceResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Attendance recorded successfully"
+        data:
+          type: object
+          properties:
+            user:
+              type: object
+              properties:
+                id:
+                  type: integer
+                name:
+                  type: string
+                email:
+                  type: string
+            tickets_booked:
+              type: integer
+              example: 2
+            booking_date:
+              type: string
+              format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              msg:
+                type: string
+              path:
+                type: string
+              location:
+                type: string
+
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Event not found"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            message: "Internal server error"
