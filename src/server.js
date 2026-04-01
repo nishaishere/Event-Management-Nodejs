@@ -23,6 +23,9 @@ app.use('/events', eventRoutes);
 app.use('/bookings', bookingRoutes);
 app.get('/users/:id/bookings', validateUserId, getUserBookings);
 
+// ── Root redirect to Swagger docs ────────────────────────────
+app.get('/', (_req, res) => res.redirect('/api-docs'));
+
 // ── Health check ─────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
